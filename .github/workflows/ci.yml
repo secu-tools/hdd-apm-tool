@@ -1,0 +1,107 @@
+# Copyright (c) 2026 Jack L. (Cpt-JackL) (https://jack-l.com)
+# SPDX-License-Identifier: MIT
+name: CI
+run-name: ${{ github.workflow }} - ${{ github.event.head_commit.message }}
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+    branches: [main, master]
+
+permissions:
+  contents: read
+
+jobs:
+  # ---------------------------------------------------------------
+  # Unit tests (Linux and Windows) -- run via build script.
+  # BUILD_NUMBER is pinned to the current file value so the
+  # test run does not auto-increment the build counter.
+  # ---------------------------------------------------------------
+  unit-tests:
+    name: Unit tests (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Run tests (Linux)
+        if: runner.os != 'Windows'
+        run: |
+          chmod +x build.sh
+          BUILD_NUMBER=$(cat version/build_number.txt | tr -cd '0-9')
+          export BUILD_NUMBER
+          ./build.sh -test
+
+      - name: Run tests (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $env:BUILD_NUMBER = (Get-Content version/build_number.txt -Raw).Trim() -replace '[^0-9]', ''
+          .\build.ps1 -test
+
+  # ---------------------------------------------------------------
+  # Lint: vet, format, ineffassign, misspell, gocognit
+  # ---------------------------------------------------------------
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Vet
+        run: go vet -buildvcs=false ./...
+
+      - name: Format check
+        run: |
+          gofmt -l .
+          test -z "$(gofmt -l .)"
+
+      - name: Install linters
+        run: |
+          go install github.com/gordonklaus/ineffassign@latest
+          go install github.com/client9/misspell/cmd/misspell@latest
+          go install github.com/uudashr/gocognit/cmd/gocognit@latest
+
+      - name: Ineffectual assignments
+        run: ineffassign ./...
+
+      - name: Spelling
+        run: misspell -error .
+
+      - name: Cognitive complexity
+        run: |
+          gocognit -over 25 -ignore '_test\.go' ./internal/
+
+  # ---------------------------------------------------------------
+  # Vulnerability check (informational -- does not block CI)
+  # ---------------------------------------------------------------
+  govulncheck:
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Install govulncheck
+        run: go install golang.org/x/vuln/cmd/govulncheck@latest
+
+      - name: Run govulncheck
+        run: govulncheck ./...

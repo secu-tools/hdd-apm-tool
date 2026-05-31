@@ -1,0 +1,19 @@
+# Build output
+build/
+
+# Go test artifacts
+coverage.out
+coverage.html
+
+# Go workspace
+go.work
+go.work.sum
+
+# IDE / editor
+.idea/
+.vscode/
+*.code-workspace
+
+# OS metadata
+.DS_Store
+Thumbs.db
