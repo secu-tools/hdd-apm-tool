@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/signal"
 	"strings"
+	"syscall"
 	"time"
 	"unsafe"
 
@@ -148,6 +149,13 @@ func isElevated() bool {
 	return member
 }
 
+// quoteWindowsArg quotes a single command-line argument following the
+// CommandLineToArgvW rules so that arguments containing whitespace or double
+// quotes survive the round trip through the elevated re-launch.
+func quoteWindowsArg(a string) string {
+	return syscall.EscapeArg(a)
+}
+
 // requestElevation re-launches the current process with administrator privileges
 // using the Windows ShellExecute "runas" verb (triggers a UAC elevation dialog).
 // If the re-launch succeeds this function calls os.Exit(0) to terminate the
@@ -160,15 +168,12 @@ func requestElevation() {
 		os.Exit(1)
 	}
 
-	// Re-assemble the argument list, quoting arguments that contain spaces.
+	// Re-assemble the argument list, quoting arguments as needed.
 	var args string
 	if len(os.Args) > 1 {
 		parts := make([]string, 0, len(os.Args)-1)
 		for _, a := range os.Args[1:] {
-			if strings.ContainsAny(a, " \t") {
-				a = `"` + a + `"`
-			}
-			parts = append(parts, a)
+			parts = append(parts, quoteWindowsArg(a))
 		}
 		args = strings.Join(parts, " ")
 	}
@@ -181,7 +186,9 @@ func requestElevation() {
 	}
 
 	// ShellExecuteW returns when the new elevated process has been created.
-	ret, _, _ := windows.NewLazyDLL("shell32.dll").
+	// NewLazySystemDLL restricts the DLL search to the System32 directory,
+	// preventing DLL search-path hijacking from the current directory.
+	ret, _, _ := windows.NewLazySystemDLL("shell32.dll").
 		NewProc("ShellExecuteW").
 		Call(0,
 			uintptr(unsafe.Pointer(verbPtr)),

@@ -44,6 +44,16 @@ func installSystemd(cfg ServiceConfig) error {
 		return err
 	}
 
+	// Values embedded in the unit file must not contain control characters:
+	// a newline would let a crafted --logdir inject arbitrary unit directives
+	// (e.g. an ExecStartPre= line executed as root).
+	if err := validateUnitValue("executable path", exe); err != nil {
+		return err
+	}
+	if err := validateUnitValue("log directory", cfg.LogDir); err != nil {
+		return err
+	}
+
 	name := cfg.ServiceName()
 	unitPath := "/etc/systemd/system/" + name + ".service"
 
@@ -52,9 +62,9 @@ func installSystemd(cfg ServiceConfig) error {
 	}
 
 	args := cfg.ServerArgs()
-	execStart := exe
-	if len(args) > 0 {
-		execStart += " " + strings.Join(args, " ")
+	execStart := systemdQuote(exe)
+	for _, a := range args {
+		execStart += " " + systemdQuote(a)
 	}
 
 	// Relax security settings when the binary or log directory is under
@@ -78,8 +88,8 @@ func installSystemd(cfg ServiceConfig) error {
 	// starting and grant write access inside the stricter ProtectSystem sandbox.
 	var execStartPre, readWritePaths string
 	if cfg.LogDir != "" {
-		execStartPre = "ExecStartPre=+/bin/mkdir -p " + cfg.LogDir + "\n"
-		readWritePaths = "ReadWritePaths=" + cfg.LogDir + "\n"
+		execStartPre = "ExecStartPre=+/bin/mkdir -p " + systemdQuote(cfg.LogDir) + "\n"
+		readWritePaths = "ReadWritePaths=" + systemdQuote(cfg.LogDir) + "\n"
 	}
 
 	// Type=oneshot: systemd waits for the process to exit before marking the
@@ -214,6 +224,38 @@ func findServicesSystemd() []linuxService {
 		services = append(services, linuxService{name: name, execStart: execStart})
 	}
 	return services
+}
+
+// validateUnitValue rejects strings that cannot be safely embedded in a
+// systemd unit file. Control characters (most importantly newlines) would
+// allow injection of arbitrary unit directives.
+func validateUnitValue(what, s string) error {
+	for _, r := range s {
+		if r < 0x20 || r == 0x7F {
+			return fmt.Errorf("%s contains control characters and cannot be used in a systemd unit", what)
+		}
+	}
+	return nil
+}
+
+// systemdQuote quotes a single command-line argument for use in a systemd
+// ExecStart/ExecStartPre line. Plain values are returned unchanged; values
+// containing spaces, quotes, or backslashes are wrapped in double quotes with
+// the inner quotes and backslashes escaped, per systemd.service(5) quoting.
+func systemdQuote(s string) string {
+	if s != "" && !strings.ContainsAny(s, " \t\"'\\") {
+		return s
+	}
+	var b strings.Builder
+	b.WriteByte('"')
+	for i := 0; i < len(s); i++ {
+		if s[i] == '"' || s[i] == '\\' {
+			b.WriteByte('\\')
+		}
+		b.WriteByte(s[i])
+	}
+	b.WriteByte('"')
+	return b.String()
 }
 
 // pathUnderTmp reports whether path is located under /tmp.

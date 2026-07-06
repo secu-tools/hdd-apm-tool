@@ -128,6 +128,17 @@ func Run() {
 	svcName := flag.String("svcname", "", "")  // internal flag for Windows SCM name
 	flag.Parse()
 
+	// Validate before anything else. The int->uint8 conversions below would
+	// otherwise silently truncate out-of-range values (e.g. 300 -> 44), and
+	// the Windows SCM handoff must never run with an unvalidated level.
+	if *apmLevel < 1 || *apmLevel > 255 {
+		fmt.Fprintf(os.Stderr, "ERROR | APM level must be between 1 and 255 (got %d)\n", *apmLevel)
+		fmt.Fprintf(os.Stderr, "  1-127:  Enable APM, allow spindown\n")
+		fmt.Fprintf(os.Stderr, "  128-254: Enable APM, no spindown\n")
+		fmt.Fprintf(os.Stderr, "  255:    Disable APM entirely (default)\n")
+		os.Exit(1)
+	}
+
 	// When started by the Windows Service Control Manager, hand off immediately.
 	if maybeRunAsWindowsService(*svcName, *logDir, uint8(*apmLevel), *dryRun) {
 		return
@@ -136,14 +147,6 @@ func Run() {
 	if *showVersion {
 		fmt.Println(versionString())
 		os.Exit(0)
-	}
-
-	if *apmLevel < 1 || *apmLevel > 255 {
-		fmt.Fprintf(os.Stderr, "ERROR | APM level must be between 1 and 255 (got %d)\n", *apmLevel)
-		fmt.Fprintf(os.Stderr, "  1-127:  Enable APM, allow spindown\n")
-		fmt.Fprintf(os.Stderr, "  128-254: Enable APM, no spindown\n")
-		fmt.Fprintf(os.Stderr, "  255:    Disable APM entirely (default)\n")
-		os.Exit(1)
 	}
 
 	// Must be elevated for all disk operations. On Windows this triggers a UAC
@@ -270,7 +273,10 @@ func processSingleDisk(num int, path string, cfg RunConfig, logr *logging.Logger
 	result := ata.APMResult{Disk: ata.DiskInfo{Path: path, Interface: iface}}
 
 	// Skip NVMe drives - they use different power management (NVMe APST).
-	if ata.IsNVMeDevice(path) || iface == "NVMe" {
+	// The interface string already comes from platform bus detection, so a
+	// separate ata.IsNVMeDevice probe (a second device open + ioctl on
+	// Windows) is not needed here.
+	if iface == "NVMe" {
 		result.Skipped = true
 		result.SkipReason = "NVMe drive - APM is not applicable (NVMe uses NVMe APST)"
 		logr.Infof("  Skip: NVMe device")
@@ -291,7 +297,7 @@ func processSingleDisk(num int, path string, cfg RunConfig, logr *logging.Logger
 	result.Disk.Firmware = id.FirmwareRevision()
 	result.Disk.IsSSDDrive = id.IsSSD()
 	result.Disk.RotationRPM = id.RotationRate()
-	logr.Infof("  Model: %s | Firmware: %s", id.Model(), id.FirmwareRevision())
+	logr.Infof("  Model: %s | Firmware: %s", result.Disk.Model, result.Disk.Firmware)
 
 	// Skip SSD drives - APM spindown settings are meaningless for solid-state
 	// devices and some SSDs behave incorrectly when APM is forcibly set.
@@ -311,7 +317,7 @@ func processSingleDisk(num int, path string, cfg RunConfig, logr *logging.Logger
 	if !id.IsAPMSupported() {
 		result.Skipped = true
 		result.Disk.APMSupported = false
-		result.SkipReason = categorizeNoAPMReason(id.Model())
+		result.SkipReason = categorizeNoAPMReason(result.Disk.Model)
 		logr.Infof("  APM support: NO - %s", result.SkipReason)
 		return result
 	}

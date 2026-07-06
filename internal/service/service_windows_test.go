@@ -5,7 +5,57 @@
 
 package service
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
+
+func TestSystem32Path(t *testing.T) {
+	got := scExePath()
+	if !strings.HasSuffix(got, `\System32\sc.exe`) {
+		t.Errorf("scExePath() = %q, want path ending in \\System32\\sc.exe", got)
+	}
+	if !strings.Contains(got, `:\`) {
+		t.Errorf("scExePath() = %q, want an absolute path", got)
+	}
+	ps := powershellPath()
+	if !strings.HasSuffix(ps, `\WindowsPowerShell\v1.0\powershell.exe`) {
+		t.Errorf("powershellPath() = %q, want the System32 PowerShell path", ps)
+	}
+}
+
+func TestBuildServiceBinPath_PlainArgs(t *testing.T) {
+	got := buildServiceBinPath(`C:\Tools\hdd-apm-tool.exe`, []string{"--apm", "254", "--service"})
+	want := `C:\Tools\hdd-apm-tool.exe --apm 254 --service`
+	if got != want {
+		t.Errorf("buildServiceBinPath() = %q, want %q", got, want)
+	}
+}
+
+func TestBuildServiceBinPath_ExeWithSpaces(t *testing.T) {
+	got := buildServiceBinPath(`C:\Program Files\HDD APM\hdd-apm-tool.exe`, []string{"--apm", "255"})
+	want := `"C:\Program Files\HDD APM\hdd-apm-tool.exe" --apm 255`
+	if got != want {
+		t.Errorf("buildServiceBinPath() = %q, want %q", got, want)
+	}
+}
+
+func TestBuildServiceBinPath_LogDirWithSpaces(t *testing.T) {
+	got := buildServiceBinPath(`C:\t.exe`, []string{"--logdir", `C:\My Logs\apm`})
+	want := `C:\t.exe --logdir "C:\My Logs\apm"`
+	if got != want {
+		t.Errorf("buildServiceBinPath() = %q, want %q", got, want)
+	}
+}
+
+func TestBuildServiceBinPath_QuoteInjection(t *testing.T) {
+	// An argument containing a double quote must not be able to terminate the
+	// quoted region and smuggle extra arguments into the service command line.
+	got := buildServiceBinPath(`C:\t.exe`, []string{"--logdir", `C:\x" --apm 1 --y "z`})
+	if strings.Contains(got, `x" --apm 1`) {
+		t.Errorf("embedded quote not escaped in binPath: %q", got)
+	}
+}
 
 func TestFindServicesWindows_ReturnsSlice(t *testing.T) {
 	// findServicesWindows() queries WMI via PowerShell. In environments without

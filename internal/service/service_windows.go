@@ -10,12 +10,45 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
+	"syscall"
 )
 
 func init() {
 	platformInstall = installWindows
 	platformUninstall = uninstallWindows
+}
+
+// system32Path returns the absolute path of a tool under the Windows System32
+// directory. Elevated processes must not resolve system tools through the
+// PATH environment variable, which could be attacker-influenced.
+func system32Path(elem ...string) string {
+	root := os.Getenv("SystemRoot")
+	if root == "" {
+		root = `C:\Windows`
+	}
+	return filepath.Join(append([]string{root, "System32"}, elem...)...)
+}
+
+func scExePath() string {
+	return system32Path("sc.exe")
+}
+
+func powershellPath() string {
+	return system32Path("WindowsPowerShell", "v1.0", "powershell.exe")
+}
+
+// buildServiceBinPath assembles the SCM binPath command line, quoting the
+// executable and every argument per CommandLineToArgvW rules so that paths
+// containing spaces or quotes cannot corrupt or alter the command line.
+func buildServiceBinPath(exe string, args []string) string {
+	parts := make([]string, 0, len(args)+1)
+	parts = append(parts, syscall.EscapeArg(exe))
+	for _, a := range args {
+		parts = append(parts, syscall.EscapeArg(a))
+	}
+	return strings.Join(parts, " ")
 }
 
 func installWindows(cfg ServiceConfig) error {
@@ -27,7 +60,7 @@ func installWindows(cfg ServiceConfig) error {
 	name := cfg.ServiceName()
 
 	// Fail early if the service already exists.
-	if out, err := exec.Command("sc.exe", "query", name).Output(); err == nil {
+	if out, err := exec.Command(scExePath(), "query", name).Output(); err == nil {
 		if strings.Contains(string(out), "SERVICE_NAME") {
 			return fmt.Errorf("service %q already exists; use --uninstall to remove it first or choose a different label", name)
 		}
@@ -36,9 +69,9 @@ func installWindows(cfg ServiceConfig) error {
 	args := cfg.ServerArgs()
 	// Embed --svcname so the binary knows its SCM name when launched by the SCM.
 	svcArgs := append([]string{"--svcname", name}, args...)
-	binPath := `"` + exe + `" ` + strings.Join(svcArgs, " ")
+	binPath := buildServiceBinPath(exe, svcArgs)
 
-	out, err := exec.Command("sc.exe", "create", name,
+	out, err := exec.Command(scExePath(), "create", name,
 		"binPath=", binPath,
 		"start=", "auto",
 		"DisplayName=", cfg.DisplayName(),
@@ -48,18 +81,18 @@ func installWindows(cfg ServiceConfig) error {
 	}
 
 	desc := "HDD APM Tool - Applies ATA Advanced Power Management settings to HDD drives once."
-	if out, err := exec.Command("sc.exe", "description", name, desc).CombinedOutput(); err != nil {
+	if out, err := exec.Command(scExePath(), "description", name, desc).CombinedOutput(); err != nil {
 		fmt.Printf("Warning: failed to set service description: %s\n", strings.TrimSpace(string(out)))
 	}
 
-	if out, err := exec.Command("sc.exe", "failure", name,
+	if out, err := exec.Command(scExePath(), "failure", name,
 		"reset=", "86400",
 		"actions=", "restart/10000/restart/30000/restart/60000",
 	).CombinedOutput(); err != nil {
 		fmt.Printf("Warning: failed to set failure actions: %s\n", strings.TrimSpace(string(out)))
 	}
 
-	out, err = exec.Command("sc.exe", "start", name).CombinedOutput()
+	out, err = exec.Command(scExePath(), "start", name).CombinedOutput()
 	if err != nil {
 		fmt.Printf("Service created but failed to start: %s\n", strings.TrimSpace(string(out)))
 		fmt.Println("You can start it manually: sc start", name)
@@ -111,9 +144,9 @@ func uninstallWindows(cfg ServiceConfig) error {
 	}
 
 	svc := services[idx]
-	exec.Command("sc.exe", "stop", svc.name).Run()
+	exec.Command(scExePath(), "stop", svc.name).Run()
 
-	out, err := exec.Command("sc.exe", "delete", svc.name).CombinedOutput()
+	out, err := exec.Command(scExePath(), "delete", svc.name).CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("sc delete: %s (%w)", strings.TrimSpace(string(out)), err)
 	}
@@ -132,7 +165,7 @@ type winService struct {
 // contains "hdd-apm-tool".
 func findServicesWindows() []winService {
 	psCmd := `Get-WmiObject Win32_Service | Where-Object { $_.PathName -like '*hdd-apm-tool*' } | ForEach-Object { $_.Name + '|' + $_.DisplayName + '|' + $_.PathName }`
-	out, err := exec.Command("powershell", "-NoProfile", "-Command", psCmd).Output()
+	out, err := exec.Command(powershellPath(), "-NoProfile", "-Command", psCmd).Output()
 	if err != nil {
 		return nil
 	}
