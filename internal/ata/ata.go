@@ -2,8 +2,8 @@
 // SPDX-License-Identifier: MIT
 
 // Package ata provides ATA/SATA drive identification, APM queries, and APM set
-// operations for APM Tool. Platform-specific implementations live in
-// ata_linux.go and ata_windows.go.
+// operations for HDD APM Tool. Platform-specific implementations live in
+// ata_linux.go, ata_windows.go, and ata_darwin.go.
 package ata
 
 import "encoding/binary"

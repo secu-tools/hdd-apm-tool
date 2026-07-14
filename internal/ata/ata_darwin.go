@@ -61,8 +61,8 @@ type dkSenseData struct {
 
 // dkIoctlSCSICommand is dk_ioctl_scsicommand_t.
 // Layout: 8+8+8+8 + 1+3 + 22 + 6_trail = 64 bytes.
-// Command and Buffer use unsafe.Pointer so the GC tracks the pointed-to
-// objects and keeps them alive through the syscall without needing KeepAlive.
+// Command and Buffer are unsafe.Pointer so the GC tracks the pointed-to
+// objects while the struct is live.
 type dkIoctlSCSICommand struct {
 	Command     unsafe.Pointer // pointer to dkIOCSCommand (GC-tracked)
 	CommandSize uint64
@@ -223,15 +223,13 @@ func dkioSCSICommand(fd *os.File, cmd *dkIOCSCommand, buf []byte) error {
 		io.BufferSize = uint64(len(buf))
 	}
 
-	// Pass a pointer to io directly into the syscall.
-	// The GC tracks io.Command and io.Buffer as live pointers.
 	_, _, errno := unix.Syscall(
 		unix.SYS_IOCTL,
 		fd.Fd(),
 		dkiociocscsicommand,
 		uintptr(unsafe.Pointer(&io)),
 	)
-	// KeepAlive ensures cmd and buf are not collected before the syscall returns.
+	// cmd and buf must stay reachable until the kernel is done with them.
 	runtime.KeepAlive(cmd)
 	runtime.KeepAlive(buf)
 

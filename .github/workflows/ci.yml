@@ -14,7 +14,7 @@ permissions:
 
 jobs:
   # ---------------------------------------------------------------
-  # Unit tests (Linux and Windows) -- run via build script.
+  # Unit tests (Linux, macOS, Windows) -- run via build script.
   # BUILD_NUMBER is pinned to the current file value so the
   # test run does not auto-increment the build counter.
   # ---------------------------------------------------------------

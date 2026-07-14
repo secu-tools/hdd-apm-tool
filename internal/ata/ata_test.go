@@ -319,7 +319,7 @@ func TestRealDrive_WDPurple_APMDisabled(t *testing.T) {
 		t.Error("WD Purple should support APM")
 	}
 	if id.IsAPMEnabled() {
-		t.Error("WD Purple (disk 01) should have APM disabled")
+		t.Error("WD Purple should have APM disabled")
 	}
 }
 

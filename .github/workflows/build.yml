@@ -20,7 +20,7 @@ jobs:
   # Build script verification -- Linux (ubuntu-latest)
   # Tests: all-platforms amd64+arm64, deb+rpm packaging,
   #        build script -test flag.
-  # All builds are pure Go (CGO_ENABLED=0) -- no zig needed.
+  # All builds are pure Go (CGO_ENABLED=0).
   # ---------------------------------------------------------------
   build-scripts-linux:
     runs-on: ubuntu-latest
@@ -60,7 +60,7 @@ jobs:
   # Build script verification -- Windows (windows-latest)
   # Tests: all-platforms amd64+arm64, deb+rpm packaging (cross-
   #        compiled linux binaries), build script -test flag.
-  # All builds are pure Go (CGO_ENABLED=0) -- no zig needed.
+  # All builds are pure Go (CGO_ENABLED=0).
   # ---------------------------------------------------------------
   build-scripts-windows:
     runs-on: windows-latest
@@ -97,7 +97,7 @@ jobs:
   # ---------------------------------------------------------------
   # Build script verification -- macOS (macos-latest)
   # Tests: darwin amd64+arm64 native build, build script -test flag.
-  # All builds are pure Go (CGO_ENABLED=0) -- no Xcode SDK needed.
+  # All builds are pure Go (CGO_ENABLED=0).
   # ---------------------------------------------------------------
   build-scripts-macos:
     runs-on: macos-latest

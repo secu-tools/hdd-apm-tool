@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 // Package logging provides structured text logging with file rotation,
-// level filtering, and platform-aware log paths for APM Tool.
+// level filtering, and platform-aware log paths for HDD APM Tool.
 package logging
 
 import (

@@ -273,9 +273,6 @@ func processSingleDisk(num int, path string, cfg RunConfig, logr *logging.Logger
 	result := ata.APMResult{Disk: ata.DiskInfo{Path: path, Interface: iface}}
 
 	// Skip NVMe drives - they use different power management (NVMe APST).
-	// The interface string already comes from platform bus detection, so a
-	// separate ata.IsNVMeDevice probe (a second device open + ioctl on
-	// Windows) is not needed here.
 	if iface == "NVMe" {
 		result.Skipped = true
 		result.SkipReason = "NVMe drive - APM is not applicable (NVMe uses NVMe APST)"

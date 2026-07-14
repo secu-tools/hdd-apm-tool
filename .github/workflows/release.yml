@@ -42,7 +42,7 @@ concurrency:
 
 jobs:
   # ---------------------------------------------------------------
-  # 1. Run tests on Linux and Windows -- abort on any failure.
+  # 1. Run tests on Linux, macOS, and Windows -- abort on any failure.
   #    BUILD_NUMBER is pinned to the current file value so the
   #    test run does not auto-increment the build counter.
   # ---------------------------------------------------------------

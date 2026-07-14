@@ -60,7 +60,7 @@ type sgIOHdr struct {
 }
 
 // EnumerateDisks discovers all SATA/USB-attached block devices on Linux.
-// NVMe paths (/dev/nvme*) are not included; they are handled separately.
+// NVMe paths (/dev/nvme*) are not enumerated; ATA APM does not apply to them.
 func EnumerateDisks() ([]string, error) {
 	var disks []string
 

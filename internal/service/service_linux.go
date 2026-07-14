@@ -95,8 +95,7 @@ func installSystemd(cfg ServiceConfig) error {
 	// Type=oneshot: systemd waits for the process to exit before marking the
 	// unit as started. RemainAfterExit=yes means the unit shows "active
 	// (exited)" after the process finishes, so it does not look like a failure.
-	// No Restart= is set because this is an intentional run-once-at-boot tool;
-	// systemd's start=auto causes it to run again on the next boot.
+	// No Restart= is set: the enabled unit simply runs again at the next boot.
 	unit := fmt.Sprintf(`[Unit]
 Description=%s
 After=local-fs.target network.target

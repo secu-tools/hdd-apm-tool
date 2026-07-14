@@ -7,45 +7,29 @@
 [![CodeQL](https://github.com/secu-tools/hdd-apm-tool/actions/workflows/github-code-scanning/codeql/badge.svg)](https://github.com/secu-tools/hdd-apm-tool/actions/workflows/github-code-scanning/codeql)
 [![Dependency Graph](https://github.com/secu-tools/hdd-apm-tool/actions/workflows/dependabot/update-graph/badge.svg)](https://github.com/secu-tools/hdd-apm-tool/actions/workflows/dependabot/update-graph)
 
-## Introduction
-ATA Advanced Power Management (APM) configuration tool for spinning HDD drives
-on Windows, Linux, and macOS. No external dependencies - issues raw ATA commands
-directly via OS APIs.
+ATA Advanced Power Management (APM) configuration tool for spinning HDDs on
+Windows, Linux, and macOS. Issues raw ATA commands directly via OS APIs - no
+hdparm, no smartctl, no other external dependencies.
 
 ## How It Works
 
-1. Enumerates all disk devices (Windows: `\\.\PhysicalDriveN`, Linux: `/dev/sd*`, macOS: `/dev/rdiskN`)
-2. Identifies each drive using ATA IDENTIFY DEVICE command (0xEC)
-3. Checks APM capability via word 83 bit 3 of the IDENTIFY response
-4. Skips:
-   - NVMe drives (use NVMe APST, not ATA APM)
-   - SSD drives (APM spindown is irrelevant for solid-state devices)
-   - Any drive where IDENTIFY reports APM not supported
-5. Sets APM using ATA SET FEATURES (0xEF) subcommand 0x05 (enable) or 0x85 (disable)
-6. Logs results to stdout; writes to a log file only when `--logdir` is specified
+1. Enumerates all disk devices
+2. Identifies each drive with ATA IDENTIFY DEVICE
+3. Skips NVMe drives (they use NVMe APST, not ATA APM), SSDs (spindown does
+   not apply), and drives that do not report APM support
+4. Applies the requested level with ATA SET FEATURES
 
-The tool is a one-shot application: it applies APM settings to every eligible
-drive and exits. When installed as a service, the OS runs it once at each boot
-to restore settings that are lost after a power cycle.
+USB-attached drives are supported on all three platforms via SCSI/ATA
+Translation (SAT) pass-through; see [Platform Notes](#platform-notes).
 
-### Passthrough Methods (handles USB drives)
-
-| Method | Platform | Use Case |
-|--------|----------|----------|
-| IOCTL_ATA_PASS_THROUGH | Windows | Direct SATA/AHCI drives |
-| IOCTL_SCSI_PASS_THROUGH + SAT12 CDB | Windows | SATA/USB bridges (buffered) |
-| IOCTL_SCSI_PASS_THROUGH_DIRECT + SAT16 CDB | Windows | USB Mass Storage bridges |
-| HDIO_DRIVE_CMD ioctl | Linux | Direct SATA drives |
-| SG_IO ioctl + SAT16 CDB | Linux | USB/SATA bridges |
-| DKIOCIOCSCSICOMMAND ioctl + SAT16 CDB | macOS | SATA/USB drives via IOKit |
+The tool is one-shot: it applies APM to every eligible drive and exits.
 
 ## APM Levels
 
 | Level | Meaning |
 |-------|---------|
 | 1 - 127 | APM enabled, spindown allowed (aggressive power saving) |
-| 128 - 254 | APM enabled, no spindown (moderate power saving) |
-| 254 | Maximum performance with APM enabled |
+| 128 - 254 | APM enabled, no spindown (254 = maximum performance) |
 | 255 | Disable APM entirely (default) |
 
 ## Quick Start
@@ -54,58 +38,36 @@ to restore settings that are lost after a power cycle.
 # Build
 go build -o hdd-apm-tool ./
 
-# Show version
-./hdd-apm-tool --version
-
 # Dry run - show what would be done
 sudo ./hdd-apm-tool --apm 128 --dry-run
 
-# Apply APM level 128 to all HDD drives
+# Apply APM level 128 to all HDDs
 sudo ./hdd-apm-tool --apm 128
 
 # Disable APM
 sudo ./hdd-apm-tool --apm 255
 ```
 
-On Windows, administrator privileges are required. If the tool is not already
-running as Administrator, it will prompt for UAC elevation automatically.
+> [!NOTE]
+> Root/Administrator privileges are required. On Windows the tool prompts for
+> UAC elevation automatically; on Linux/macOS run with `sudo`.
 
-On Linux, run with sudo.
+> [!TIP]
+> Use `--dry-run` first to see which drives would be touched and their
+> current APM state.
 
 ## Service Installation
 
-APM settings are volatile: drives reset to factory defaults after a power
-cycle. Install HDD APM Tool as a system service to reapply settings automatically
-on every boot.
-
-The service is run-once by design: at each boot the OS starts the tool, it
-applies APM to all eligible drives, then exits with code 0. The OS does not
-keep the process running between boots.
-
-- **Linux (systemd)**: unit type is `oneshot` with `RemainAfterExit=yes`. After
-  the tool exits, `systemctl status` shows `active (exited)`, not `failed`.
-  The unit is not set to restart on failure; if APM cannot be applied, check
-  `journalctl -u hdd-apm-tool` for the error.
-- **Windows (SCM)**: service type is `auto-start`. After the tool exits with 0,
-  the SCM shows the service as `Stopped`. On next boot the SCM starts it again.
-  Three automatic retries (with increasing delays) are configured for the case
-  where disk drivers are not yet ready when the service first starts.
-  When started manually from Services.msc, the service dwells briefly in the
-  Running state after completing its work so that Windows does not show the
-  "started and then stopped" warning.
-- **macOS (launchd)**: a plist with `RunAtLoad=true` and `KeepAlive=false` is
-  installed to `/Library/LaunchDaemons/`. launchd runs the tool once at boot
-  and does not restart it. After the tool exits, check logs at
-  `/var/log/hdd-apm-tool/`.
+> [!WARNING]
+> APM settings are volatile: drives reset to their factory defaults after a
+> power cycle. Install the tool as a system service to reapply the level
+> automatically at every boot.
 
 ```bash
-# Linux (requires root)
+# Linux / macOS (requires root)
 sudo ./hdd-apm-tool --install --apm 128
 
-# macOS (requires root)
-sudo ./hdd-apm-tool --install --apm 128
-
-# Windows (run as Administrator, or the UAC prompt will appear)
+# Windows (elevated, or the UAC prompt will appear)
 hdd-apm-tool.exe --install --apm 128
 
 # Uninstall
@@ -113,12 +75,24 @@ sudo ./hdd-apm-tool --uninstall
 hdd-apm-tool.exe --uninstall
 ```
 
-The installer prompts for an optional label so that multiple instances with
-different APM levels can coexist on the same machine.
+The service runs once at each boot, applies APM to all eligible drives, and
+exits:
 
-On Linux, a systemd unit is created under `/etc/systemd/system/`.
-On macOS, a launchd plist is created under `/Library/LaunchDaemons/`.
-On Windows, a Windows Service is registered via `sc.exe`.
+- **Linux**: systemd unit (`oneshot`) under `/etc/systemd/system/`
+- **macOS**: launchd plist under `/Library/LaunchDaemons/`, logs to
+  `/var/log/hdd-apm-tool/`
+- **Windows**: auto-start service registered via `sc.exe`, with automatic
+  retries in case disk drivers are not ready at first start
+
+> [!NOTE]
+> A completed run shows as `active (exited)` in `systemctl status` and as
+> `Stopped` in the Windows service list. This is normal for a run-once
+> service, not a failure.
+
+> [!TIP]
+> The installer prompts for an optional label, so multiple instances with
+> different APM levels can coexist on the same machine. After installing, it
+> prints the status, log, and uninstall commands for your platform.
 
 ## Flags
 
@@ -133,130 +107,70 @@ On Windows, a Windows Service is registered via `sc.exe`.
 
 ## Logging
 
-By default, output goes to stdout only. Specify `--logdir` to also write a
-rotating log file to that directory:
-
-```bash
-sudo ./hdd-apm-tool --apm 128 --logdir /var/log/hdd-apm-tool
-```
-
-When installed as a service and `--logdir` was supplied to `--install`, the
-log directory is preserved in the service arguments and used on every start.
+Output goes to stdout. `--logdir <dir>` also writes a rotating log file to
+that directory. When supplied together with `--install`, the directory is
+preserved in the service arguments and used on every boot.
 
 ## Building
 
-```powershell
-# Windows - CMD
-build.cmd
-build.cmd -all
-build.cmd -test
+All platforms use the same flags. Run the script for your OS:
 
-# Windows - PowerShell
-.\build.ps1                   # windows/amd64 + linux/amd64
-.\build.ps1 -linux            # linux/amd64 + linux/arm64
-.\build.ps1 -darwin           # darwin/amd64 + darwin/arm64
-.\build.ps1 -all              # all platform/arch combinations
-.\build.ps1 -test             # run tests
-.\build.ps1 -coverage         # run tests with coverage report
-.\build.ps1 -clean            # remove build artifacts
-```
+| Platform | Command |
+|----------|---------|
+| Linux / macOS | `./build.sh [flags]` |
+| Windows (PowerShell) | `.\build.ps1 [flags]` |
+| Windows (CMD) | `build.cmd [flags]` (forwards to `build.ps1`) |
 
-```bash
-# Linux/macOS
-./build.sh                    # linux/amd64 + windows/amd64
-./build.sh -linux             # linux/amd64 + linux/arm64
-./build.sh -darwin            # darwin/amd64 + darwin/arm64
-./build.sh -all               # all platform/arch combinations
-./build.sh -test              # run tests
-./build.sh -coverage          # run tests with coverage report
-./build.sh -clean             # remove build artifacts
-```
+| Flag | Effect |
+|------|--------|
+| `-windows` / `-linux` / `-darwin` | Select platform(s); combine freely |
+| `-amd64` / `-arm64` | Select architecture(s); combine freely |
+| `-all` | Build every platform/arch combination |
+| `-deb` / `-rpm` | Package linux builds as .deb/.rpm (combine with `-linux`) |
+| `-test` | Run unit tests |
+| `-coverage` | Run tests with coverage report |
+| `-clean` | Remove build artifacts |
+
+Example: `./build.sh -linux -arm64` builds linux/arm64 only.
+
+> [!NOTE]
+> With no flags, `build.sh` builds windows+linux for both amd64 and arm64;
+> `build.ps1`/`build.cmd` builds windows+linux for amd64 only. Darwin is
+> always opt-in (`-darwin` or `-all`).
+
+All builds are pure Go (`CGO_ENABLED=0`), so any platform can cross-compile
+for any other - no Xcode or native toolchain needed.
 
 ## Platform Notes
 
 ### Linux
 
-Uses HDIO_GET_IDENTITY and HDIO_DRIVE_CMD ioctls for direct SATA drives, with
-SG_IO SAT16 PASS-THROUGH fallback for USB-attached drives. Requires root.
-
-Device files are opened with `O_NONBLOCK` to avoid blocking on drives that are
-not yet ready. CK_COND=0 is used in the SG_IO CDB for maximum compatibility
-with USB-to-SATA bridge chipsets.
+Enumerates `/dev/sd*` and `/dev/hd*` devices. Uses HDIO ioctls for direct
+SATA drives, with SG_IO SAT16 pass-through fallback for USB-attached drives.
+The service logs to the journal: `journalctl -u hdd-apm-tool`.
 
 ### Windows
 
-Uses a three-stage passthrough chain for maximum compatibility:
-1. `IOCTL_ATA_PASS_THROUGH` - direct SATA/AHCI drives
-2. `IOCTL_SCSI_PASS_THROUGH` + SAT12 CDB - most SATA/USB bridges
-3. `IOCTL_SCSI_PASS_THROUGH_DIRECT` + SAT16 CDB - USB Mass Storage bridges
-
-The third method (SPTD) is required for USB drives because the USB Mass Storage
-class driver (`usbstor.sys`) does not support the buffered SCSI pass-through
-IOCTL. SAT16 (16-byte CDB) is used in the SPTD path for wider USB bridge
-chipset support. CK_COND=0 is used in all CDBs for bridge compatibility.
-
-UAC elevation is requested automatically when the tool is not already running
-as Administrator.
+Enumerates `\\.\PhysicalDriveN` devices. Tries three pass-through methods in
+order: `IOCTL_ATA_PASS_THROUGH` (direct SATA/AHCI), `SCSI_PASS_THROUGH` +
+SAT12 CDB (most SATA/USB bridges), then `SCSI_PASS_THROUGH_DIRECT` + SAT16
+CDB (USB Mass Storage bridges).
 
 ### macOS
 
-Uses `diskutil list -plist` to enumerate whole physical disks and `diskutil info
--plist` to query the bus protocol (NVMe, SATA, USB, Thunderbolt). ATA commands
-are issued via the `DKIOCIOCSCSICOMMAND` ioctl using raw disk device nodes
-(`/dev/rdiskN`). SAT16 ATA PASS-THROUGH CDBs are used for IDENTIFY DEVICE and
-SET FEATURES. Requires root.
+Enumerates disks with `diskutil` and issues ATA commands via the
+`DKIOCIOCSCSICOMMAND` ioctl (SAT16 pass-through on `/dev/rdiskN`).
 
-**Notes for macOS users:**
-- Most modern Macs have NVMe or SATA SSD internal storage. APM is not applicable
-  to NVMe drives or SSDs; the tool will enumerate and skip them automatically.
-- External spinning HDDs connected via USB or Thunderbolt are fully supported.
-  The tool reads drive identity and applies APM the same as on Linux/Windows.
-- Pure Go build (CGO_ENABLED=0): no Xcode or native SDK is required to run or
-  cross-compile. darwin/amd64 and darwin/arm64 binaries are cross-compiled from
-  the Linux CI runner.
-
-Example usage with an external USB hard drive:
-
-```bash
-# List drives - shows interfaces and APM state
-sudo ./hdd-apm-tool --dry-run
-
-# Apply APM level 128 (no spindown, moderate power saving)
-sudo ./hdd-apm-tool --apm 128
-
-# Install as a launchd daemon (runs at boot)
-sudo ./hdd-apm-tool --install --apm 128
-
-# Check service status
-launchctl list | grep com.secu-tools.hdd-apm-tool
-
-# View logs
-tail -f /var/log/hdd-apm-tool/hdd-apm-tool.stdout.log
-
-# Uninstall
-sudo ./hdd-apm-tool --uninstall
-```
-
-## Running Tests
-
-```powershell
-# Windows
-.\build.ps1 -test
-.\build.ps1 -coverage
-```
-
-```bash
-# Linux/macOS
-./build.sh -test
-./build.sh -coverage
-```
+> [!NOTE]
+> Internal Mac storage (NVMe/SSD) is enumerated and skipped automatically -
+> APM does not apply to it. External spinning HDDs over USB or Thunderbolt
+> are fully supported.
 
 ## Requirements
 
 - Go 1.25+ to build
-- Administrator (Windows) or root (Linux/macOS) to run (prompted automatically on Windows)
-- No external tools required (no hdparm, no smartctl, no Xcode)
-- macOS: `diskutil` must be available (included in all macOS installations)
+- Administrator (Windows) or root (Linux/macOS) to run
+- macOS: `diskutil` (included with the OS)
 
 ## License
 

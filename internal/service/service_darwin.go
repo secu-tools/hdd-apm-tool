@@ -4,7 +4,7 @@
 //go:build darwin
 
 // Package service -- macOS implementation using launchd.
-// APM Tool is a run-once-at-boot tool: RunAtLoad=true, KeepAlive=false.
+// HDD APM Tool is a run-once-at-boot tool: RunAtLoad=true, KeepAlive=false.
 // The daemon plist is installed to /Library/LaunchDaemons/ (root-owned,
 // loaded by launchd at boot for all users).
 package service

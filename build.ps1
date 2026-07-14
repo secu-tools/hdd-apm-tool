@@ -1,29 +1,7 @@
 # Copyright (c) 2026 Jack L. (Cpt-JackL) (https://jack-l.com)
 # SPDX-License-Identifier: MIT
-# HDD APM Tool build script for Windows PowerShell
-#
-# Usage:
-#   .\build.ps1                   # Build windows/amd64 + linux/amd64
-#   .\build.ps1 -windows          # Build windows/amd64 + windows/arm64
-#   .\build.ps1 -linux            # Build linux/amd64 + linux/arm64
-#   .\build.ps1 -darwin           # Build darwin/amd64 + darwin/arm64
-#   .\build.ps1 -amd64            # Build all platforms for amd64 only
-#   .\build.ps1 -arm64            # Build all platforms for arm64 only
-#   .\build.ps1 -linux -amd64     # Build linux/amd64 only
-#   .\build.ps1 -linux -arm64     # Build linux/arm64 only
-#   .\build.ps1 -windows -amd64   # Build windows/amd64 only
-#   .\build.ps1 -windows -arm64   # Build windows/arm64 only
-#   .\build.ps1 -darwin -amd64    # Build darwin/amd64 only
-#   .\build.ps1 -darwin -arm64    # Build darwin/arm64 only
-#   .\build.ps1 -all              # Build all platform/arch combinations (linux+windows+darwin)
-#   .\build.ps1 -test             # Run unit tests
-#   .\build.ps1 -coverage         # Run tests with coverage
-#   .\build.ps1 -clean            # Clean build artifacts
-#   .\build.ps1 -linux -deb       # Build linux + create .deb packages
-#   .\build.ps1 -linux -rpm       # Build linux + create .rpm packages
-#   .\build.ps1 -linux -deb -rpm  # Build linux + both .deb and .rpm
-#
-# All builds use CGO_ENABLED=0 (pure Go).
+# HDD APM Tool build script for Windows PowerShell.
+# See "Building" in README.md for usage and flags.
 #
 # Filename convention: hdd-apm-tool_<VERSION>-<OS>-<ARCH>[.exe]
 param(

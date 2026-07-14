@@ -2,15 +2,15 @@
 // SPDX-License-Identifier: MIT
 
 // Package service provides cross-platform system service installation and
-// uninstallation for APM Tool (Windows, Linux).
+// uninstallation for HDD APM Tool (Windows, Linux, macOS).
 //
-// On Windows the tool is registered as a Windows Service via sc.exe.
-// On Linux it is registered as a systemd unit.
+// On Windows the tool is registered as a Windows Service via sc.exe, on
+// Linux as a systemd unit, and on macOS as a launchd daemon.
 //
 // During install the user is prompted for an optional service label so that
-// multiple instances (e.g. different APM levels for different machines) can
-// coexist. The --logdir flag is preserved in the service command line when
-// it was specified at install time.
+// multiple instances (e.g. with different APM levels) can coexist on the
+// same machine. The --logdir flag is preserved in the service command line
+// when it was specified at install time.
 package service
 
 import (
