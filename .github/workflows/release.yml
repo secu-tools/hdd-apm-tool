@@ -125,6 +125,11 @@ jobs:
           else
             BUILD_NUMBER=$FILE_BUILD
           fi
+          # Decimal whatever the spelling: "08" is not octal, and "007" has to
+          # name the same files on every platform. build.ps1 reads it as 7,
+          # so the zeros are dropped here, before the number reaches any job.
+          BUILD_NUMBER=$(printf '%s' "$BUILD_NUMBER" | tr -cd '0-9')
+          BUILD_NUMBER=$((10#${BUILD_NUMBER:-0}))
           NEXT_BUILD_NUMBER=$((BUILD_NUMBER + 1))
 
           FULL_VERSION="${VERSION}.${BUILD_NUMBER}"
@@ -238,68 +243,7 @@ jobs:
           retention-days: 1
 
   # ---------------------------------------------------------------
-  # 3b. Build macOS binaries (darwin/amd64 + darwin/arm64)
-  #     Pure Go (CGO_ENABLED=0) -- no Xcode or native SDK required.
-  # ---------------------------------------------------------------
-  build-macos:
-    needs: resolve-version
-    runs-on: macos-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: actions/setup-go@v5
-        with:
-          go-version-file: go.mod
-          cache: true
-
-      - name: Build environment info
-        run: |
-          echo "Runner OS  : $(uname -s)"
-          echo "Runner arch: $(uname -m)"
-          echo "Go version : $(go version)"
-
-      - name: Build darwin binaries (amd64 + arm64)
-        env:
-          VERSION: ${{ needs.resolve-version.outputs.version }}
-          BUILD_NUMBER: ${{ needs.resolve-version.outputs.build_number }}
-        run: |
-          echo "Building VERSION=${VERSION} BUILD_NUMBER=${BUILD_NUMBER}"
-          chmod +x build.sh
-          ./build.sh -darwin
-
-      - name: List build outputs
-        run: |
-          echo "=== build/ ==="
-          find build -type f | sort | while read f; do
-            echo "  $f  ($(du -k "$f" | cut -f1) KB)"
-          done
-
-      - name: Verify darwin binaries
-        run: |
-          fail=0
-          for arch in amd64 arm64; do
-            found=$(find build/darwin -name "*-darwin-${arch}" -type f 2>/dev/null)
-            if [ -z "$found" ]; then
-              echo "::error::FAIL: binary not found for darwin/${arch}"
-              fail=1
-            else
-              echo "OK: $found ($(du -k "$found" | cut -f1) KB)"
-            fi
-          done
-          if [ $fail -ne 0 ]; then
-            echo "::error::macOS build failed -- aborting release"
-            exit 1
-          fi
-
-      - name: Upload macOS artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: build-macos
-          path: build/darwin/
-          retention-days: 1
-
-  # ---------------------------------------------------------------
-  # 3c. Build Windows binaries (windows/amd64 + windows/arm64)
+  # 3b. Build Windows binaries (windows/amd64 + windows/arm64)
   #     Pure Go (CGO_ENABLED=0) -- no native toolchain dependencies.
   # ---------------------------------------------------------------
   build-windows:
@@ -363,6 +307,90 @@ jobs:
           retention-days: 1
 
   # ---------------------------------------------------------------
+  # 3c. Build macOS arm64 binary (macos-latest = arm64 runner)
+  # ---------------------------------------------------------------
+  build-macos-arm64:
+    needs: resolve-version
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Build environment info
+        run: |
+          echo "Runner OS  : $(uname -s)"
+          echo "Runner arch: $(uname -m)"
+          echo "Go version : $(go version)"
+
+      - name: Build darwin/arm64
+        env:
+          VERSION: ${{ needs.resolve-version.outputs.version }}
+          BUILD_NUMBER: ${{ needs.resolve-version.outputs.build_number }}
+        run: |
+          chmod +x build.sh
+          ./build.sh -darwin -arm64
+
+      - name: List build outputs
+        run: |
+          echo "=== build/darwin/ ==="
+          find build/darwin -type f | sort | while read f; do
+            echo "  $f  ($(stat -f%z "$f") bytes)"
+          done
+
+      - name: Upload macOS arm64 artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-macos-arm64
+          path: build/darwin/
+          retention-days: 1
+
+  # ---------------------------------------------------------------
+  # 3d. Build macOS amd64 binary (macos-26-intel = Intel/amd64 runner)
+  # ---------------------------------------------------------------
+  build-macos-amd64:
+    needs: resolve-version
+    runs-on: macos-26-intel
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Build environment info
+        run: |
+          echo "Runner OS  : $(uname -s)"
+          echo "Runner arch: $(uname -m)"
+          echo "Go version : $(go version)"
+
+      - name: Build darwin/amd64
+        env:
+          VERSION: ${{ needs.resolve-version.outputs.version }}
+          BUILD_NUMBER: ${{ needs.resolve-version.outputs.build_number }}
+        run: |
+          chmod +x build.sh
+          ./build.sh -darwin -amd64
+
+      - name: List build outputs
+        run: |
+          echo "=== build/darwin/ ==="
+          find build/darwin -type f | sort | while read f; do
+            echo "  $f  ($(stat -f%z "$f") bytes)"
+          done
+
+      - name: Upload macOS amd64 artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-macos-amd64
+          path: build/darwin/
+          retention-days: 1
+
+  # ---------------------------------------------------------------
   # 4. Publish release
   #    All three build jobs must succeed before this runs.
   #    Steps:
@@ -373,7 +401,7 @@ jobs:
   #      - Create GitHub Release with all files attached
   # ---------------------------------------------------------------
   publish:
-    needs: [resolve-version, build-linux, build-macos, build-windows]
+    needs: [resolve-version, build-linux, build-windows, build-macos-arm64, build-macos-amd64]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4

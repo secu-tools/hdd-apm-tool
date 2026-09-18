@@ -128,6 +128,7 @@ All platforms use the same flags. Run the script for your OS:
 | `-all` | Build every platform/arch combination |
 | `-deb` / `-rpm` | Package linux builds as .deb/.rpm (combine with `-linux`) |
 | `-test` | Run unit tests |
+| `-testscripts` | Run the build scripts against a copy of the tree (slow) |
 | `-coverage` | Run tests with coverage report |
 | `-clean` | Remove build artifacts |
 

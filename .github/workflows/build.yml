@@ -17,6 +17,69 @@ env:
 
 jobs:
   # ---------------------------------------------------------------
+  # Direct cross-compile matrix: a fast per-target compile check,
+  # independent of the build scripts exercised in the jobs below.
+  # ---------------------------------------------------------------
+  build:
+    name: Build (${{ matrix.goos }}/${{ matrix.goarch }})
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - goos: linux
+            goarch: amd64
+          - goos: linux
+            goarch: arm64
+          - goos: windows
+            goarch: amd64
+          - goos: windows
+            goarch: arm64
+          - goos: darwin
+            goarch: amd64
+          - goos: darwin
+            goarch: arm64
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Read version
+        id: version
+        run: |
+          VERSION=$(cat version/version_base.txt | tr -d '[:space:]')
+          BUILD=$(cat version/build_number.txt | tr -d '[:space:]')
+          COMMIT=$(git rev-parse --short HEAD)
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "build=$BUILD" >> "$GITHUB_OUTPUT"
+          echo "commit=$COMMIT" >> "$GITHUB_OUTPUT"
+          echo "full=$VERSION.$BUILD" >> "$GITHUB_OUTPUT"
+
+      - name: Build
+        env:
+          CGO_ENABLED: "0"
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+        run: |
+          MODULE="github.com/secu-tools/hdd-apm-tool/internal/app"
+          EXT=""
+          if [ "${{ matrix.goos }}" = "windows" ]; then EXT=".exe"; fi
+          OUTPUT="build/hdd-apm-tool_${{ steps.version.outputs.full }}-${{ matrix.goos }}-${{ matrix.goarch }}${EXT}"
+          go build -buildvcs=false \
+            -ldflags "-s -w -X ${MODULE}.version=${{ steps.version.outputs.version }} -X ${MODULE}.commit=${{ steps.version.outputs.commit }} -X ${MODULE}.buildNumber=${{ steps.version.outputs.build }}" \
+            -trimpath \
+            -o "$OUTPUT" \
+            ./
+
+      - name: Upload artifact
+        if: env.KEEP_ARTIFACTS == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: hdd-apm-tool-${{ matrix.goos }}-${{ matrix.goarch }}
+          path: build/hdd-apm-tool_*
+
+  # ---------------------------------------------------------------
   # Build script verification -- Linux (ubuntu-latest)
   # Tests: all-platforms amd64+arm64, deb+rpm packaging,
   #        build script -test flag.
@@ -37,17 +100,19 @@ jobs:
           go install github.com/goreleaser/nfpm/v2/cmd/nfpm@latest
           echo "nfpm version: $(nfpm --version)"
 
-      - name: Build all platforms amd64+arm64
-        run: chmod +x build.sh && ./build.sh -all
-
-      - name: Build linux + create deb and rpm packages
-        run: ./build.sh -linux -deb -rpm
+      - name: Build every target and package linux as deb and rpm
+        # One pass: the script starts by clearing build/, so a second call
+        # would discard what the first produced.
+        run: chmod +x build.sh && ./build.sh -all -deb -rpm
 
       - name: Run tests via build script (-test flag)
         run: |
           BUILD_NUMBER=$(cat version/build_number.txt | tr -cd '0-9')
           export BUILD_NUMBER
           ./build.sh -test
+
+      - name: Build script tests
+        run: go test -tags scripts -count=1 -timeout 900s ./tests/scripts/
 
       - name: Upload build artifacts
         if: env.KEEP_ARTIFACTS == 'true'
@@ -75,17 +140,19 @@ jobs:
       - name: Install nfpm
         run: go install github.com/goreleaser/nfpm/v2/cmd/nfpm@latest
 
-      - name: Build all platforms amd64+arm64
-        run: .\build.ps1 -all
-
-      - name: Build linux + create deb and rpm packages
-        run: .\build.ps1 -linux -deb -rpm
+      - name: Build every target and package linux as deb and rpm
+        # One pass: the script starts by clearing build/, so a second call
+        # would discard what the first produced.
+        run: .\build.ps1 -all -deb -rpm
 
       - name: Run tests via build script (-test flag)
         shell: pwsh
         run: |
           $env:BUILD_NUMBER = (Get-Content version/build_number.txt -Raw).Trim() -replace '[^0-9]', ''
           .\build.ps1 -test
+
+      - name: Build script tests
+        run: go test -tags scripts -count=1 -timeout 900s ./tests/scripts/
 
       - name: Upload build artifacts
         if: env.KEEP_ARTIFACTS == 'true'
@@ -114,17 +181,20 @@ jobs:
           go install github.com/goreleaser/nfpm/v2/cmd/nfpm@latest
           echo "nfpm version: $(nfpm --version)"
 
-      - name: Build all platforms amd64+arm64
+      - name: Build every target
+        # One pass: the script starts by clearing build/, so the -darwin call
+        # that used to follow discarded everything the -all call produced.
+        # -all already covers darwin amd64 and arm64.
         run: chmod +x build.sh && ./build.sh -all
-
-      - name: Build darwin binaries only
-        run: ./build.sh -darwin
 
       - name: Run tests via build script (-test flag)
         run: |
           BUILD_NUMBER=$(cat version/build_number.txt | tr -cd '0-9')
           export BUILD_NUMBER
           ./build.sh -test
+
+      - name: Build script tests
+        run: go test -tags scripts -count=1 -timeout 900s ./tests/scripts/
 
       - name: Upload build artifacts
         if: env.KEEP_ARTIFACTS == 'true'

@@ -8,6 +8,7 @@ on:
     branches: [main, master]
   pull_request:
     branches: [main, master]
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -18,8 +19,8 @@ jobs:
   # BUILD_NUMBER is pinned to the current file value so the
   # test run does not auto-increment the build counter.
   # ---------------------------------------------------------------
-  unit-tests:
-    name: Unit tests (${{ matrix.os }})
+  test:
+    name: Test (${{ matrix.os }})
     strategy:
       fail-fast: false
       matrix:
@@ -63,7 +64,9 @@ jobs:
           cache: true
 
       - name: Vet
-        run: go vet -buildvcs=false ./...
+        run: |
+          go vet -buildvcs=false ./...
+          go vet -buildvcs=false -tags scripts ./tests/scripts/
 
       - name: Format check
         run: |

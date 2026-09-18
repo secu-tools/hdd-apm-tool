@@ -11,15 +11,65 @@ param(
     [switch]$amd64,
     [switch]$arm64,
     [switch]$all,
+    [switch]$native,
     [switch]$test,
+    [switch]$testall,
+    [switch]$integration,
+    [switch]$teste2e,
+    [switch]$testsmoke,
+    [switch]$testscripts,
     [switch]$coverage,
     [switch]$clean,
     [switch]$deb,
-    [switch]$rpm
+    [switch]$rpm,
+    # Anything not matched above. build.sh rejects unknown flags; without
+    # this PowerShell would silently ignore a typo and run a default build.
+    [Parameter(ValueFromRemainingArguments = $true)]
+    [string[]]$Rest
 )
 
+# Show-Usage prints the same flag list as build.sh.
+function Show-Usage {
+    @"
+Usage: build.ps1 [targets] [actions]
+
+Targets:
+  -windows -linux -darwin    select platform(s)
+  -amd64 -arm64              select architecture(s)
+  -all                       every platform and architecture
+  -native                    this host's platform and architecture only
+
+Actions:
+  -test          unit tests + fuzz seed corpus
+  -integration   integration tests (none in this project)
+  -teste2e       end-to-end tests (none in this project)
+  -testsmoke     smoke tests (none in this project)
+  -testscripts   the build scripts, against a copy of the tree
+  -testall       every suite above, in order
+  -coverage      unit tests with an HTML coverage report
+  -clean         remove build artifacts
+  -deb -rpm      package linux builds (combine with -linux or -all)
+"@ | Write-Host
+}
+
+if ($Rest) {
+    Write-Host "Unknown argument: $($Rest -join ' ')"
+    Write-Host ""
+    Show-Usage
+    exit 1
+}
+
 $Binary = "hdd-apm-tool"
-$Commit = try { git rev-parse --short HEAD 2>$null } catch { "dev" }
+
+# Outside a git checkout (a source tarball, or the copy the script tests build
+# in) git writes to stderr. Errors are tolerated explicitly here so the lookup
+# stays harmless if this script ever adopts $ErrorActionPreference = "Stop",
+# under which a bare stderr write would end the run before it started.
+$Commit = ""
+$prevErrorAction = $ErrorActionPreference
+$ErrorActionPreference = "Continue"
+try { $Commit = (git rev-parse --short HEAD 2>$null) } catch { $Commit = "" }
+$ErrorActionPreference = $prevErrorAction
 if (-not $Commit) { $Commit = "dev" }
 
 # Read base version from version/version_base.txt
@@ -35,7 +85,10 @@ if ($env:VERSION) { $Version = $env:VERSION }
 $BuildNumberFile = Join-Path $PSScriptRoot "version\build_number.txt"
 $SkipBuildNumberBump = $false
 if ($env:BUILD_NUMBER) {
-    $BuildNumber = [int]$env:BUILD_NUMBER
+    # Only the digits count, and a value with none is 0, which is what build.sh
+    # does with the same input; "007" is 7 on both.
+    $rawEnv = $env:BUILD_NUMBER -replace '[^0-9]', ''
+    $BuildNumber = if ($rawEnv) { [int]$rawEnv } else { 0 }
     $SkipBuildNumberBump = $true
 } else {
     $BuildNumber = 0
@@ -44,21 +97,33 @@ if ($env:BUILD_NUMBER) {
         if ($raw) { $BuildNumber = [int]$raw }
     }
 }
-if (-not $SkipBuildNumberBump) {
-    # Use a named system Mutex so concurrent PowerShell build processes do not
-    # produce duplicate build numbers or corrupt the file.
+# Take-BuildNumber is called only once a build is actually going to happen.
+# This build takes the number the file holds and leaves the next one behind:
+# the convention build.sh, the release workflow and the sibling projects
+# share. Taking the number the file was bumped TO instead would stamp this
+# build one ahead of the release built from the same starting file.
+#
+# It is NOT called for -test, -clean and the other actions, because a run that
+# produces no binary must not consume a version.
+#
+# A named system Mutex keeps concurrent PowerShell builds from taking the same
+# number or corrupting the file.
+function Take-BuildNumber {
+    if ($SkipBuildNumberBump) { return }
     $mtx = [System.Threading.Mutex]::new($false, "Global\HddApmToolBuildNumber")
     try {
         $null = $mtx.WaitOne()
         # Re-read under the lock to handle the TOCTOU window.
         $lockedRaw = (Get-Content $BuildNumberFile -Raw -ErrorAction SilentlyContinue).Trim() -replace '[^0-9]', ''
         $lockedNum = if ($lockedRaw) { [int]$lockedRaw } else { 0 }
-        $BuildNumber = $lockedNum + 1
-        Set-Content $BuildNumberFile $BuildNumber
+        $script:BuildNumber = $lockedNum
+        Set-Content $BuildNumberFile ($lockedNum + 1)
     } finally {
         $mtx.ReleaseMutex()
         $mtx.Dispose()
     }
+    $script:FullVersion = "$Version.$script:BuildNumber"
+    $script:LDFlags = "-X ${Module}.version=$Version -X ${Module}.commit=$Commit -X ${Module}.buildNumber=$script:BuildNumber"
 }
 
 $FullVersion = "$Version.$BuildNumber"
@@ -74,26 +139,42 @@ Write-Host ""
 
 # -- Detect toolchain ------------------------------------------------
 
+# Find-Nfpm returns the nfpm executable: the one on PATH, or the one go install
+# leaves in GOBIN (GOPATH\bin by default), which is not always on PATH.
+function Find-Nfpm {
+    $cmd = Get-Command nfpm -ErrorAction SilentlyContinue
+    if ($cmd) { return $cmd.Source }
+    $gobin = (go env GOBIN)
+    if (-not $gobin) { $gobin = Join-Path (go env GOPATH) "bin" }
+    foreach ($name in "nfpm.exe", "nfpm") {
+        $cand = Join-Path $gobin $name
+        if (Test-Path $cand) { return $cand }
+    }
+    return $null
+}
+
 # nfpm (needed for -deb / -rpm packaging)
 $NfpmAvailable = $false
-$NfpmPath = Get-Command nfpm -ErrorAction SilentlyContinue
+$NfpmPath = Find-Nfpm
 if ($NfpmPath) {
     $NfpmAvailable = $true
-    Write-Host "nfpm:    found ($($NfpmPath.Source))" -ForegroundColor Green
-} else {
-    if ($deb.IsPresent -or $rpm.IsPresent) {
-        Write-Host "nfpm:    not found -- auto-installing..." -ForegroundColor Yellow
-        & go install github.com/goreleaser/nfpm/v2/cmd/nfpm@latest 2>&1 | Out-Null
-        $NfpmPath = Get-Command nfpm -ErrorAction SilentlyContinue
-        if ($NfpmPath) {
-            $NfpmAvailable = $true
-            Write-Host "nfpm:    installed ($($NfpmPath.Source))" -ForegroundColor Green
-        } else {
-            Write-Host "nfpm:    auto-install failed" -ForegroundColor Red
-            Write-Host "         Install manually: go install github.com/goreleaser/nfpm/v2/cmd/nfpm@latest" -ForegroundColor Yellow
-            exit 1
-        }
+    Write-Host "nfpm:    found ($NfpmPath)" -ForegroundColor Green
+} elseif ($deb.IsPresent -or $rpm.IsPresent) {
+    Write-Host "nfpm:    not found -- auto-installing..." -ForegroundColor Yellow
+    # The install's own output is kept, so a failure says why.
+    go install github.com/goreleaser/nfpm/v2/cmd/nfpm@latest
+    if ($LASTEXITCODE -ne 0) {
+        Write-Host "nfpm:    auto-install failed" -ForegroundColor Red
+        Write-Host "         Install manually: go install github.com/goreleaser/nfpm/v2/cmd/nfpm@latest" -ForegroundColor Yellow
+        exit 1
     }
+    $NfpmPath = Find-Nfpm
+    if (-not $NfpmPath) {
+        Write-Host "nfpm:    installed, but not found in GOBIN or on PATH" -ForegroundColor Red
+        exit 1
+    }
+    $NfpmAvailable = $true
+    Write-Host "nfpm:    installed ($NfpmPath)" -ForegroundColor Green
 }
 
 Write-Host ""
@@ -108,14 +189,56 @@ if ($clean) {
     exit 0
 }
 
-if ($test) {
-    Write-Host "Running tests ..." -ForegroundColor Cyan
-    go test -buildvcs=false -count=1 ./...
+# No-Suite: this project has no such suite. The flag is accepted so the same
+# commands work across every project; it reports and succeeds.
+function No-Suite($name) {
+    Write-Host "No $name tests in this project."
+    exit 0
+}
+
+if ($integration) { No-Suite "integration" }
+if ($teste2e)     { No-Suite "end-to-end" }
+if ($testsmoke)   { No-Suite "smoke" }
+
+# Invoke-Suite <label> <scriptblock> -- run one suite, ending the script if it
+# fails.
+function Invoke-Suite($label, [scriptblock]$body) {
+    Write-Host ""
+    Write-Host "$label..." -ForegroundColor Cyan
+    & $body
     if ($LASTEXITCODE -ne 0) {
-        Write-Host "Tests failed!" -ForegroundColor Red
+        Write-Host "$label failed" -ForegroundColor Red
         exit 1
     }
-    Write-Host "Tests passed." -ForegroundColor Green
+}
+
+if ($test) {
+    Write-Host "Running unit tests + fuzz seed corpus..." -ForegroundColor Cyan
+    Invoke-Suite "[1/2] Unit tests" { go test -buildvcs=false -count=1 ./... }
+    Invoke-Suite "[2/2] Fuzz seed corpus" { go test -buildvcs=false -count=1 -run '^Fuzz' ./internal/... }
+    Write-Host ""
+    Write-Host "All tests passed." -ForegroundColor Green
+    exit 0
+}
+
+if ($testscripts) {
+    Write-Host "Running build script tests..." -ForegroundColor Cyan
+    go test -tags scripts -count=1 -timeout 900s ./tests/scripts/
+    if ($LASTEXITCODE -ne 0) {
+        Write-Host "Build script tests failed" -ForegroundColor Red
+        exit 1
+    }
+    Write-Host "Build script tests passed." -ForegroundColor Green
+    exit 0
+}
+
+if ($testall) {
+    Write-Host "Running full suite: unit -> fuzz -> build scripts..." -ForegroundColor Cyan
+    Invoke-Suite "[1/3] Unit tests" { go test -buildvcs=false -count=1 ./... }
+    Invoke-Suite "[2/3] Fuzz seed corpus" { go test -buildvcs=false -count=1 -run '^Fuzz' ./internal/... }
+    Invoke-Suite "[3/3] Build script tests" { go test -tags scripts -count=1 -timeout 900s ./tests/scripts/ }
+    Write-Host ""
+    Write-Host "Full test suite passed." -ForegroundColor Green
     exit 0
 }
 
@@ -140,7 +263,21 @@ if (Test-Path $BuildDir) {
 $osExplicit   = $windows.IsPresent -or $linux.IsPresent -or $darwin.IsPresent
 $archExplicit = $amd64.IsPresent   -or $arm64.IsPresent
 
-if ($all) {
+if ($native) {
+    # -native: this host only, whatever it is.
+    $hostOS = (go env GOOS)
+    $hostArch = (go env GOARCH)
+    if ($hostOS -notin @("windows", "linux", "darwin")) {
+        Write-Host "Unsupported host platform: $hostOS" -ForegroundColor Red
+        exit 1
+    }
+    if ($hostArch -notin @("amd64", "arm64")) {
+        Write-Host "Unsupported host architecture: $hostArch" -ForegroundColor Red
+        exit 1
+    }
+    $selectedOS   = @($hostOS)
+    $selectedArch = @($hostArch)
+} elseif ($all) {
     $selectedOS   = @("windows", "linux", "darwin")
     $selectedArch = @("amd64", "arm64")
 } elseif ($osExplicit -and $archExplicit) {
@@ -181,7 +318,17 @@ foreach ($os in $selectedOS) {
     }
 }
 
+# A build is definitely happening now, so take the build number and leave the
+# next one in the file.
+Take-BuildNumber
+
 Write-Host "Building $($platforms.Count) target(s)..." -ForegroundColor Green
+
+# Clear-GoEnv drops the per-target variables so they do not outlive the script
+# in the calling session, whichever way the script ends.
+function Clear-GoEnv {
+    Remove-Item Env:\GOOS, Env:\GOARCH, Env:\CGO_ENABLED -ErrorAction SilentlyContinue
+}
 
 # -- Build function ---------------------------------------------------
 function Build-Target($p) {
@@ -200,11 +347,13 @@ function Build-Target($p) {
     if ($LASTEXITCODE -ne 0) {
         Write-Host "    FAILED: $output" -ForegroundColor Red
         Remove-Item $output -ErrorAction SilentlyContinue
-        return $false
+        Clear-GoEnv
+        # A compile error ends the run, as it does in build.sh. A partial build
+        # that went on to report "Build complete" would be shipped as if whole.
+        exit 1
     }
     $size = (Get-Item $output).Length
     Write-Host "    -> $([math]::Round($size/1KB, 1)) KB" -ForegroundColor White
-    return $true
 }
 
 # -- nfpm packaging function ------------------------------------------
@@ -239,23 +388,22 @@ contents:
     Set-Content -Path $tmpYaml -Value $nfpmYaml -Encoding UTF8
 
     Write-Host "  Packaging $pkgFile..." -ForegroundColor Magenta
-    & nfpm pkg --config $tmpYaml --packager $format --target $pkgFile
+    & $NfpmPath pkg --config $tmpYaml --packager $format --target $pkgFile
     $exitCode = $LASTEXITCODE
     Remove-Item $tmpYaml -ErrorAction SilentlyContinue
 
     if ($exitCode -ne 0) {
         Write-Host "    FAILED: $pkgFile" -ForegroundColor Red
-        return
+        Clear-GoEnv
+        exit 1
     }
     $size = (Get-Item $pkgFile).Length
     Write-Host "    -> $([math]::Round($size/1KB, 1)) KB" -ForegroundColor Magenta
 }
 
 # -- Main build loop --------------------------------------------------
-$buildSuccess = 0
-$buildFailed  = 0
 foreach ($p in $platforms) {
-    if (Build-Target $p) { $buildSuccess++ } else { $buildFailed++ }
+    Build-Target $p
 }
 
 # -- Package Linux binaries with nfpm if -deb or -rpm requested -------
@@ -276,15 +424,10 @@ if ($NfpmAvailable -and ($deb.IsPresent -or $rpm.IsPresent)) {
 }
 
 # Reset environment
-Remove-Item Env:\GOOS        -ErrorAction SilentlyContinue
-Remove-Item Env:\GOARCH      -ErrorAction SilentlyContinue
-Remove-Item Env:\CGO_ENABLED -ErrorAction SilentlyContinue
+Clear-GoEnv
 
 Write-Host ""
-Write-Host "Build complete: $buildSuccess succeeded, $buildFailed failed." -ForegroundColor $(if ($buildFailed -eq 0) { "Green" } else { "Red" })
-if ($buildFailed -gt 0) { exit 1 }
-Write-Host ""
-Write-Host "Output in $BuildDir/" -ForegroundColor Green
+Write-Host "Build complete. Output in $BuildDir/" -ForegroundColor Green
 Get-ChildItem $BuildDir -Recurse -File | ForEach-Object {
     Write-Host "  $($_.FullName.Replace((Get-Location).Path + '\', ''))"
 }

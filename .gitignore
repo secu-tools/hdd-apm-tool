@@ -17,3 +17,6 @@ go.work.sum
 # OS metadata
 .DS_Store
 Thumbs.db
+
+# Lock file created by the build scripts while taking a build number
+version/build_number.txt.lock
